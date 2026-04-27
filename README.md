@@ -124,7 +124,7 @@ zsxq-publisher/
 ├── user_config.json           # 当前默认星球配置
 └── groups.json                # 星球列表
 ```
-```
+
 
 ## 工作原理
 
