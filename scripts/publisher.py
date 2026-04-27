@@ -263,7 +263,18 @@ class ZsxqPublisher:
             }
         }
 
-        article_result = self._post(ENDPOINTS["create_article"], article_payload)
+        article_result = None
+        for attempt in range(1, 6):
+            article_result = self._post(ENDPOINTS["create_article"], article_payload)
+            if article_result and article_result.get("succeeded"):
+                break
+
+            code = article_result.get("code") if isinstance(article_result, dict) else None
+            if code in (429, 1059) or article_result is None:
+                print(f"    创建文章瞬时失败 (code={code})，第 {attempt} 次重试...")
+                time.sleep(min(12.0, 2.5 * attempt))
+                continue
+            break
 
         if not article_result or not article_result.get("succeeded"):
             print(f"  [FAIL] 文章创建失败")
