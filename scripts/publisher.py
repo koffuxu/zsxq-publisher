@@ -57,6 +57,8 @@ class ZsxqPublisher:
     def _upload_image(self, image_data: bytes, filename: str) -> Optional[Dict]:
         """上传单张图片到知识星球（七牛云）
 
+        SVG 会自动转为 PNG（依赖 cairosvg + cairo 系统库）。
+
         Returns:
             {"image_id": 123, "url": "https://..."} 或 None
         """
@@ -67,6 +69,21 @@ class ZsxqPublisher:
         mime_type, _ = mimetypes.guess_type(filename)
         if not mime_type:
             mime_type = "application/octet-stream"
+
+        # SVG → PNG 自动转换（七牛云不支持 SVG）
+        if mime_type == "image/svg+xml" or filename.lower().endswith(".svg"):
+            try:
+                import cairosvg
+                image_data = cairosvg.svg2png(bytestring=image_data)
+                filename = filename.rsplit(".", 1)[0] + ".png"
+                mime_type = "image/png"
+                print(f"    SVG 已转为 PNG ({len(image_data)} bytes)")
+            except ImportError:
+                print(f"    [WARN] cairosvg 未安装，无法转换 SVG（pip install cairosvg && brew install cairo）")
+                return None
+            except Exception as e:
+                print(f"    [WARN] SVG 转换失败: {e}")
+                return None
 
         try:
             files = {"file": (filename, image_data, mime_type)}

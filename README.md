@@ -10,7 +10,7 @@
 
 - **话题发布**：短内容直接发布，支持加粗标题 + 标签
 - **文章发布**：长内容自动走两步流程（创建文章 → 创建话题引用）
-- **图片上传**：自动检测 Markdown 中的本地/远程图片，上传至知识星球 CDN
+- **图片上传**：自动检测 Markdown 中的图片引用（本地/远程），上传至知识星球 CDN；SVG 自动转 PNG
 - **自动判断**：根据内容长度自动选择话题/文章模式（阈值 500 字符）
 - **Markdown 转换**：自动将 Markdown 转为知识星球富文本格式
 - **浏览器登录**：Cookie 过期时自动打开 Chrome 扫码登录，登录后持久化保存
@@ -21,6 +21,7 @@
 - Python 3.9+
 - Chrome 浏览器（用于扫码登录）
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
+- [Cairo](https://www.cairographics.org/) 系统库（SVG → PNG 转换，可选）：macOS 下 `brew install cairo`
 
 ## 安装
 
