@@ -1,11 +1,12 @@
 ---
-name: zsxq-publish
+name: zsxq-publisher
 description: |
-  知识星球内容发布工具。将本地 Markdown 文件或文本内容快速发布到知识星球（韭菜喵厂长）。
-  支持发布话题（短内容）和长文章两种模式。自动处理 Markdown 到知识星球富文本格式的转换。
+  知识星球内容发布工具。将本地 Markdown 文件或文本内容快速发布到知识星球。
+  支持话题（短内容）和长文章两种模式，文章模式自动上传 Markdown 中的图片到知识星球 CDN。
+  自动处理 Markdown 到知识星球富文本格式的转换。
   Cookie 过期时自动提示浏览器登录授权，登录后持久化保存。
-  当用户需要：(1) 发布内容到知识星球，(2) 发布 Markdown 文件，(3) 查看发布历史，(4) 登录授权时使用。
-  触发词：发布到知识星球、zsxq-publish、知识星球发布、发布话题、发布文章
+  当用户需要：(1) 发布内容到知识星球，(2) 发布带图片文章，(3) 查看发布历史，(4) 登录授权时使用。
+  触发词：发布到知识星球、zsxq-publisher、知识星球发布、发布话题、发布文章
 allowed-tools: Bash, Read, Write, Glob, Grep
 mode-command: false
 ---
@@ -14,18 +15,19 @@ mode-command: false
 
 ## 概览
 
-将内容发布到**韭菜喵厂长**知识星球（ID: 15554418212152）。
+将内容发布到知识星球。
 
 支持两种发布模式：
 - **话题模式**（topic）：短内容，直接以富文本发布，<500字自动选择
-- **文章模式**（article）：长内容，两步流程（创建文章 → 创建话题引用），>=500字自动选择
+- **文章模式**（article）：长内容，两步流程（处理图片 → 创建文章 → 创建话题引用），>=500字自动选择
+  - 文章模式自动检测 Markdown 中的图片引用（本地路径或远程 URL），上传至知识星球 CDN
 
 ## 运行器路径
 
 所有命令通过 `run.py` 运行器执行，它会自动管理虚拟环境和依赖安装：
 
 ```
-RUN = "C:/Users/Administrator/.claude/skills/zsxq-publish/scripts/run.py"
+RUN = "~/.claude/skills/zsxq-publisher/scripts/run.py"
 ```
 
 ## 命令参考
