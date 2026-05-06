@@ -317,18 +317,21 @@ class ZsxqPublisher:
         # 适当延迟
         time.sleep(random.uniform(0.5, 1.5))
 
-        # Step 2: 创建话题引用文章
-        print(f"  [Step 2] 创建话题引用文章...")
-        summary = body[:300] if body else ""
-        topic_text = markdown_to_topic_text(summary, title=title)
+        # Step 2: 创建普通话题（摘要 + 文章链接）
+        print(f"  [Step 2] 创建话题摘要与链接...")
+        summary = self._build_article_summary(md_content, max_chars=180)
+        topic_lines = [title]
+        if summary:
+            topic_lines.extend(["", summary])
+        topic_lines.extend(["", "详细步骤见文章：", article_url])
         if tags:
-            topic_text += "\n" + format_hashtags(tags)
+            topic_lines.extend(["", format_hashtags(tags)])
+        topic_text = "\n".join(topic_lines)
 
         topic_payload = {
             "req_data": {
                 "type": "talk",
                 "text": topic_text,
-                "article_id": article_id,
             }
         }
 
@@ -384,6 +387,21 @@ class ZsxqPublisher:
 
         new_content = pattern.sub(replace_match, md_content)
         return new_content, image_ids
+
+    def _build_article_summary(self, md_content: str, max_chars: int = 180) -> str:
+        """从 Markdown 中提取 100-200 字左右的简要介绍，用于话题摘要。"""
+        text = md_content
+        text = re.sub(r'<img[^>]*>', ' ', text, flags=re.I)
+        text = re.sub(r'!\[[^\]]*\]\(([^)]+)\)', ' ', text)
+        text = re.sub(r'^#{1,6}\s*', '', text, flags=re.M)
+        text = re.sub(r'^[-*+]\s*', '', text, flags=re.M)
+        text = re.sub(r'^\d+\.\s*', '', text, flags=re.M)
+        text = re.sub(r'`{1,3}[^`]*`{1,3}', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        if len(text) <= max_chars:
+            return text
+        cut = text[:max_chars].rstrip('，。、；：,.;: ') 
+        return cut + '…'
 
     def _get_default_group_id(self) -> str:
         """从 zsxq-cli group +list --json 读取默认 group_id"""
