@@ -101,8 +101,17 @@ def upload_image(image_path: Path) -> Dict[str, Any]:
 
 # ── Markdown 转换 ────────────────────────────────────────────
 
+ZSXQ_IMG_PATTERN = re.compile(r"^https://article-images\.zsxq\.com/[A-Za-z0-9_-]+$")
+MARKDOWN_IMG_PATTERN = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+
+
 def markdown_to_article_html(md_text: str) -> str:
-    """将 Markdown 转换为知识星球文章 HTML（简化版）"""
+    """将 Markdown 转换为知识星球文章 HTML
+
+    处理两种图片格式：
+    1. ZSXQ CDN URL（替换后纯 URL）：直接转为 <img src=...>
+    2. Markdown 图片语法 ![alt](url)：保留（由 _process_md_images 预处理后不会再出现）
+    """
     html: List[str] = []
     in_ul = False
     for raw in md_text.splitlines():
@@ -111,6 +120,13 @@ def markdown_to_article_html(md_text: str) -> str:
             if in_ul:
                 html.append("</ul>")
                 in_ul = False
+            continue
+        # 知识星球图片 URL → <img> 标签
+        if ZSXQ_IMG_PATTERN.match(line):
+            if in_ul:
+                html.append("</ul>")
+                in_ul = False
+            html.append(f'<img src="{line}" />')
             continue
         if line.startswith("# "):
             if in_ul:
