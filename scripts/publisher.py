@@ -2,253 +2,234 @@
 # -*- coding: utf-8 -*-
 """知识星球发布工具 - 发布模块
 
-支持两种发布模式:
-1. 话题发布（短内容）: POST /v2/groups/{group_id}/topics
-2. 文章发布（长内容）: 先 POST /v2/articles 创建文章，再 POST topics 引用文章
+发布模式：
+1. 话题发布（短内容）：POST /v2/groups/{group_id}/topics
+2. 文章发布（长内容）：先 POST /v2/articles 创建文章，再 POST topics 引用文章
+
+内部实现：底层通过 zsxq-cli api raw 调用官方 API，不再依赖 auth.json。
 """
+
+from __future__ import annotations
 
 import json
 import mimetypes
-import re
-import time
 import random
-from datetime import datetime
+import re
+import subprocess
+import time
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from config import ENDPOINTS, GROUP_ID, PUBLISH_HISTORY_FILE, QINIU_UPLOAD_URL
-from auth import load_auth, build_request_headers
-from markdown_converter import (
-    markdown_to_article_html,
-    markdown_to_topic_text,
-    extract_title_from_markdown,
-    format_hashtags,
-)
 
+def _sh(cmd: List[str]) -> str:
+    """执行 shell 命令，失败则抛异常"""
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if p.returncode != 0:
+        raise RuntimeError(f"cmd failed: {' '.join(cmd)}\nstdout={p.stdout}\nstderr={p.stderr}")
+    return p.stdout
+
+
+# ── zsxq-cli 封装层 ────────────────────────────────────────────
+
+def auth_status() -> Dict[str, Any]:
+    """通过 zsxq-cli 检查登录状态"""
+    out = _sh(["zsxq-cli", "auth", "status", "--json"])
+    return json.loads(out)
+
+
+def ensure_auth() -> None:
+    """确保已登录，未登录则抛出异常提示"""
+    data = auth_status()
+    if not ((data.get("ok") is True) and ((data.get("data") or {}).get("loggedIn") is True)):
+        raise RuntimeError(
+            "未登录知识星球，请先运行：zsxq-cli auth login\n"
+            "或在 Skill 环境中使用 zsxq-shared 技能的 login 流程。"
+        )
+
+
+def api_call(tool: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """通过 zsxq-cli 调用 MCP 工具"""
+    cmd = ["zsxq-cli", "api", "call", tool]
+    if params:
+        cmd += ["--params", json.dumps(params, ensure_ascii=False)]
+    out = _sh(cmd)
+    data = json.loads(out)
+    return data.get("result", {}).get("body", {})
+
+
+def api_raw(method: str, path: str, body: Optional[Dict[str, Any]] = None, query: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """通过 zsxq-cli raw 调用 API（灵活调用任意端点）"""
+    cmd = ["zsxq-cli", "api", "raw", "--method", method, "--path", path]
+    if body is not None:
+        cmd += ["--body", json.dumps(body, ensure_ascii=False)]
+    if query is not None:
+        cmd += ["--query", json.dumps(query, ensure_ascii=False)]
+    out = _sh(cmd)
+    data = json.loads(out)
+    return data.get("result", {}).get("body", {})
+
+
+def get_upload_token() -> str:
+    """申请七牛云图片上传 token（通过官方 upload 端点）"""
+    body = api_raw("POST", "/v2/uploads", {
+        "req_data": {"type": "image", "usage": "article", "name": "", "hash": "", "size": ""}
+    })
+    token = ((body.get("resp_data") or {}).get("upload_token"))
+    if not token:
+        raise RuntimeError(f"获取 upload_token 失败: {json.dumps(body, ensure_ascii=False)[:300]}")
+    return token
+
+
+def upload_image(image_path: Path) -> Dict[str, Any]:
+    """上传单张图片到知识星球 CDN，返回 image_id 和 url"""
+    token = get_upload_token()
+    mime_type, _ = mimetypes.guess_type(str(image_path))
+    mime_type = mime_type or "application/octet-stream"
+    files = {"file": (image_path.name, image_path.read_bytes(), mime_type)}
+    resp = requests.post("https://upload-z1.qiniup.com/", files=files, data={"token": token}, timeout=120)
+    resp.raise_for_status()
+    body = resp.json()
+    if not body.get("succeeded"):
+        raise RuntimeError(f"图片上传失败: {json.dumps(body, ensure_ascii=False)[:300]}")
+    return {
+        "image_id": body["resp_data"]["image_id"],
+        "url": body.get("link", ""),
+    }
+
+
+# ── Markdown 转换 ────────────────────────────────────────────
+
+def markdown_to_article_html(md_text: str) -> str:
+    """将 Markdown 转换为知识星球文章 HTML（简化版）"""
+    html: List[str] = []
+    in_ul = False
+    for raw in md_text.splitlines():
+        line = raw.strip()
+        if not line:
+            if in_ul:
+                html.append("</ul>")
+                in_ul = False
+            continue
+        if line.startswith("# "):
+            if in_ul:
+                html.append("</ul>")
+                in_ul = False
+            html.append(f"<h1>{line[2:].strip()}</h1>")
+        elif line.startswith("## "):
+            if in_ul:
+                html.append("</ul>")
+                in_ul = False
+            html.append(f"<h2>{line[3:].strip()}</h2>")
+        elif line.startswith("- "):
+            if not in_ul:
+                html.append("<ul>")
+                in_ul = True
+            html.append(f"<li>{line[2:].strip()}</li>")
+        else:
+            if in_ul:
+                html.append("</ul>")
+                in_ul = False
+            html.append(f"<p>{line}</p>")
+    if in_ul:
+        html.append("</ul>")
+    return "\n".join(html)
+
+
+def markdown_to_topic_text(md_text: str, title: str = "") -> str:
+    """将 Markdown 转为知识星球话题纯文本（保留结构和标签）"""
+    lines = []
+    if title:
+        lines.append(f"**{title}**\n")
+    for raw in md_text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("- "):
+            lines.append(f"• {line[2:].strip()}")
+        else:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def extract_title_from_markdown(md_text: str) -> Tuple[str, str]:
+    """从 Markdown 中提取标题和正文"""
+    m = re.search(r"^#\s+(.+)$", md_text, re.M)
+    title = m.group(1).strip() if m else "未命名"
+    body = re.sub(r"^#.+\n", "", md_text, count=1).strip()
+    return title, body
+
+
+def format_hashtags(tags: List[str]) -> str:
+    return " ".join(f"#{t}" for t in tags)
+
+
+# ── 发布器 ──────────────────────────────────────────────────
 
 class ZsxqPublisher:
-    """知识星球内容发布器"""
+    """知识星球内容发布器（基于 zsxq-cli）"""
 
     def __init__(self):
-        self.cookies, self.base_headers = load_auth()
-        self.history = self._load_history()
-
-    def _get_upload_token(self) -> Optional[str]:
-        """获取七牛云上传 token"""
-        payload = {
-            "req_data": {
-                "type": "image",
-                "usage": "article",
-                "name": "",
-                "hash": "",
-                "size": "",
-            }
-        }
-        result = self._post(ENDPOINTS["upload_image"], payload)
-        if result and result.get("succeeded"):
-            token = result.get("resp_data", {}).get("upload_token", "")
-            if token:
-                return token
-        print(f"  [WARN] 获取上传 token 失败")
-        return None
-
-    def _upload_image(self, image_data: bytes, filename: str) -> Optional[Dict]:
-        """上传单张图片到知识星球（七牛云）
-
-        SVG 会自动转为 PNG（依赖 cairosvg + cairo 系统库）。
-
-        Returns:
-            {"image_id": 123, "url": "https://..."} 或 None
-        """
-        token = self._get_upload_token()
-        if not token:
-            return None
-
-        mime_type, _ = mimetypes.guess_type(filename)
-        if not mime_type:
-            mime_type = "application/octet-stream"
-
-        # SVG → PNG 自动转换（七牛云不支持 SVG）
-        if mime_type == "image/svg+xml" or filename.lower().endswith(".svg"):
-            try:
-                import cairosvg
-                image_data = cairosvg.svg2png(bytestring=image_data)
-                filename = filename.rsplit(".", 1)[0] + ".png"
-                mime_type = "image/png"
-                print(f"    SVG 已转为 PNG ({len(image_data)} bytes)")
-            except ImportError:
-                print(f"    [WARN] cairosvg 未安装，无法转换 SVG（pip install cairosvg && brew install cairo）")
-                return None
-            except Exception as e:
-                print(f"    [WARN] SVG 转换失败: {e}")
-                return None
-
-        try:
-            files = {"file": (filename, image_data, mime_type)}
-            data = {"token": token}
-            resp = requests.post(
-                QINIU_UPLOAD_URL,
-                files=files,
-                data=data,
-                timeout=60,
-            )
-            if resp.status_code == 200:
-                body = resp.json()
-                if body.get("succeeded"):
-                    image_id = body.get("resp_data", {}).get("image_id")
-                    url = body.get("link", "")
-                    return {"image_id": image_id, "url": url}
-                else:
-                    print(f"  [WARN] 七牛云上传返回失败: {body}")
-            else:
-                print(f"  [WARN] 七牛云上传 HTTP {resp.status_code}: {resp.text[:200]}")
-        except requests.exceptions.Timeout:
-            print("  [WARN] 七牛云上传超时")
-        except requests.exceptions.ConnectionError:
-            print("  [WARN] 七牛云上传网络连接失败")
-        except Exception as e:
-            print(f"  [WARN] 七牛云上传异常: {e}")
-        return None
-
-    def _process_article_images(
-        self, md_content: str, base_dir: Optional[Path] = None
-    ) -> Tuple[str, List[int]]:
-        """处理 Markdown 中的图片引用：上传到知识星球并替换 URL
-
-        Returns:
-            (更新后的 markdown, image_ids 列表)
-        """
-        image_ids = []
-
-        # 匹配 Markdown 图片语法: ![alt](url)
-        pattern = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
-        matches = list(pattern.finditer(md_content))
-        if not matches:
-            return md_content, image_ids
-
-        print(f"  检测到 {len(matches)} 张图片")
-
-        for i, match in enumerate(matches):
-            alt_text = match.group(1)
-            url = match.group(2)
-            print(f"  [{i+1}/{len(matches)}] 处理图片: {alt_text or url}")
-
-            image_data = None
-            filename = url.rsplit("/", 1)[-1] if "/" in url else url
-            # 去除 URL 参数
-            if "?" in filename:
-                filename = filename.split("?")[0]
-            if not filename:
-                filename = f"image_{i+1}"
-
-            # 本地图片
-            if not url.startswith(("http://", "https://")):
-                img_path = Path(url)
-                if not img_path.is_absolute():
-                    if base_dir:
-                        img_path = base_dir / url
-                    else:
-                        img_path = Path(url).resolve()
-                if img_path.exists():
-                    image_data = img_path.read_bytes()
-                    if not filename or "." not in filename:
-                        filename = img_path.name
-                else:
-                    print(f"    [SKIP] 文件不存在: {img_path}")
-                    continue
-            else:
-                # 远程图片：下载后上传
-                try:
-                    print(f"    下载远程图片...")
-                    resp = requests.get(url, timeout=30)
-                    if resp.status_code == 200:
-                        image_data = resp.content
-                    else:
-                        print(f"    [SKIP] 下载失败 HTTP {resp.status_code}")
-                        continue
-                except Exception as e:
-                    print(f"    [SKIP] 下载异常: {e}")
-                    continue
-
-            if not image_data:
-                print(f"    [SKIP] 无法获取图片数据")
-                continue
-
-            result = self._upload_image(image_data, filename)
-            if result and result.get("image_id"):
-                image_ids.append(result["image_id"])
-                cdn_url = result.get("url", "")
-                if cdn_url:
-                    escaped_url = re.escape(url)
-                    md_content = re.sub(escaped_url, cdn_url, md_content, count=1)
-                    print(f"    [OK] image_id={result['image_id']}")
-            else:
-                print(f"    [FAIL] 上传失败，保留原始引用")
-
-        return md_content, image_ids
+        ensure_auth()  # 初始化时即检查认证
 
     def publish_topic(
-        self, text: str, title: str = "", tags: Optional[List[str]] = None
+        self,
+        text: str,
+        title: str = "",
+        group_id: str = "",
+        tags: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """发布话题（短内容）
 
         Args:
             text: 话题正文
-            title: 可选标题（会加粗显示）
+            title: 可选标题（加粗显示）
+            group_id: 目标星球 ID，不填则使用默认
             tags: 可选标签列表
         Returns:
-            API 响应数据
+            API 响应数据（含 topic_id）
         """
-        # 构建话题文本
         topic_text = markdown_to_topic_text(text, title=title)
-
-        # 添加标签
         if tags:
             topic_text += "\n" + format_hashtags(tags)
 
-        # 构建请求体
+        gid = group_id or self._get_default_group_id()
         payload = {"req_data": {"type": "talk", "text": topic_text}}
 
-        # 发送请求
-        result = self._post(ENDPOINTS["create_topic"], payload)
+        result = api_raw("POST", f"/v2/groups/{gid}/topics", body=payload)
 
         if result and result.get("succeeded"):
-            topic_data = result.get("resp_data", {}).get("topic", {})
-            self._record_history(
-                publish_type="topic",
-                title=title or text[:50],
-                topic_id=topic_data.get("topic_id"),
-                status=topic_data.get("process_status", "unknown"),
-            )
-            print(f"  [OK] 话题发布成功!")
-            print(f"  话题ID: {topic_data.get('topic_id')}")
-            print(f"  状态: {topic_data.get('process_status', 'unknown')}")
+            topic_data = ((result.get("resp_data") or {}).get("topic") or {})
+            print(f"  [OK] 话题发布成功 topic_id={topic_data.get('topic_id')}")
         else:
-            print(f"  [FAIL] 话题发布失败")
-            if result:
-                print(f"  响应: {json.dumps(result, ensure_ascii=False)}")
+            print(f"  [FAIL] 话题发布失败: {json.dumps(result, ensure_ascii=False)[:300]}")
 
         return result or {}
 
     def publish_article(
-        self, md_content: str, title: str = "", tags: Optional[List[str]] = None,
+        self,
+        md_content: str,
+        title: str = "",
+        group_id: str = "",
+        tags: Optional[List[str]] = None,
+        image_path: Optional[Path] = None,
         base_dir: Optional[Path] = None,
     ) -> Dict[str, Any]:
         """发布文章（长内容，两步流程）
 
-        Step 0: 处理图片 → 上传到知识星球获取 image_ids
-        Step 1: POST /v2/articles 创建文章 → 获取 article_id
-        Step 2: POST /v2/groups/{id}/topics 创建引用文章的话题
+        Step 1: POST /v2/articles 创建文章（含图片上传）
+        Step 2: POST /v2/groups/{id}/topics 创建引用文章的主题
 
         Args:
-            md_content: Markdown 格式的文章内容
-            title: 文章标题（如果为空，从 Markdown 中提取）
+            md_content: Markdown 格式文章内容
+            title: 文章标题（默认从 Markdown 提取）
+            group_id: 目标星球 ID，不填则使用默认
             tags: 可选标签列表
-            base_dir: 本地图片引用的基准目录
+            image_path: 可选本地长图路径（会先上传到 CDN 再插入文章）
+            base_dir: 本地图片基准目录
         Returns:
-            API 响应数据
+            API 响应（含 article_id、topic_id）
         """
         # 提取标题和正文
         if not title:
@@ -259,22 +240,31 @@ class ZsxqPublisher:
         if not title:
             title = "未命名文章"
 
-        # Step 0: 处理图片上传
-        print(f"  Step 0: 处理图片...")
-        md_content, image_ids = self._process_article_images(md_content, base_dir=base_dir)
-        print(f"  图片处理完成，共 {len(image_ids)} 张")
+        gid = group_id or self._get_default_group_id()
+        image_ids: List[int] = []
+        image_url: Optional[str] = None
+
+        # Step 0: 处理配图（可选）
+        if image_path and Path(image_path).exists():
+            print(f"  [图] 上传长图...")
+            up = upload_image(Path(image_path))
+            image_ids.append(up["image_id"])
+            image_url = up.get("url")
+            print(f"  [OK] 图片已上传 image_id={up['image_id']} url={image_url}")
+
+        # Step 0b: 处理 md_content 里的图片引用（如果有）
+        if base_dir:
+            md_content, extra_ids = self._process_md_images(md_content, Path(base_dir))
+            image_ids.extend(extra_ids)
 
         # Step 1: 创建文章
-        print(f"  Step 1: 创建文章 '{title}'...")
+        print(f"  [Step 1] 创建文章 '{title}'...")
         article_html = markdown_to_article_html(md_content)
-
         article_payload = {
             "req_data": {
-                # Current /v2/articles API requires explicit group_id; otherwise it returns code 1033.
-                "group_id": GROUP_ID,
+                "group_id": gid,
                 "title": title,
                 "content": article_html,
-                # Keep the original Markdown for compatibility with the current editor / viewer.
                 "original_content": md_content,
                 "image_ids": image_ids,
             }
@@ -282,38 +272,32 @@ class ZsxqPublisher:
 
         article_result = None
         for attempt in range(1, 6):
-            article_result = self._post(ENDPOINTS["create_article"], article_payload)
+            article_result = api_raw("POST", "/v2/articles", body=article_payload)
             if article_result and article_result.get("succeeded"):
                 break
-
-            code = article_result.get("code") if isinstance(article_result, dict) else None
+            code = (article_result or {}).get("code")
             if code in (429, 1059) or article_result is None:
-                print(f"    创建文章瞬时失败 (code={code})，第 {attempt} 次重试...")
+                print(f"    创建文章瞬时失败(code={code})，第{attempt}次重试...")
                 time.sleep(min(12.0, 2.5 * attempt))
                 continue
             break
 
         if not article_result or not article_result.get("succeeded"):
-            print(f"  [FAIL] 文章创建失败")
-            if article_result:
-                print(f"  响应: {json.dumps(article_result, ensure_ascii=False)}")
+            print(f"  [FAIL] 文章创建失败: {json.dumps(article_result, ensure_ascii=False)[:300]}")
             return article_result or {}
 
-        article_id = article_result["resp_data"]["article_id"]
-        article_url = article_result["resp_data"]["article_url"]
-        print(f"  [OK] 文章已创建: {article_id}")
-        print(f"  文章链接: {article_url}")
+        article_data = article_result.get("resp_data") or {}
+        article_id = article_data.get("article_id")
+        article_url = article_data.get("article_url")
+        print(f"  [OK] 文章已创建 article_id={article_id} url={article_url}")
 
-        # 适当延迟，避免请求过快
+        # 适当延迟
         time.sleep(random.uniform(0.5, 1.5))
 
         # Step 2: 创建话题引用文章
-        print(f"  Step 2: 创建话题引用文章...")
-
-        # 构建话题文本（摘要 + 标签）
-        summary = body[:200] if body else ""
+        print(f"  [Step 2] 创建话题引用文章...")
+        summary = body[:300] if body else ""
         topic_text = markdown_to_topic_text(summary, title=title)
-
         if tags:
             topic_text += "\n" + format_hashtags(tags)
 
@@ -327,143 +311,57 @@ class ZsxqPublisher:
 
         topic_result = None
         for attempt in range(1, 6):
-            topic_result = self._post(ENDPOINTS["create_topic"], topic_payload)
+            topic_result = api_raw("POST", f"/v2/groups/{gid}/topics", body=topic_payload)
             if topic_result and topic_result.get("succeeded"):
                 break
-
-            code = topic_result.get("code") if isinstance(topic_result, dict) else None
-            # Common transient failures observed from the web API.
+            code = (topic_result or {}).get("code")
             if code in (429, 1059) or topic_result is None:
                 time.sleep(min(12.0, 2.5 * attempt))
                 continue
             break
 
-        if topic_result and topic_result.get("succeeded"):
-            topic_data = topic_result.get("resp_data", {}).get("topic", {})
-            self._record_history(
-                publish_type="article",
-                title=title,
-                topic_id=topic_data.get("topic_id"),
-                article_id=article_id,
-                article_url=article_url,
-                status=topic_data.get("process_status", "unknown"),
-            )
-            print(f"  [OK] 文章发布成功!")
-            print(f"  话题ID: {topic_data.get('topic_id')}")
-            print(f"  文章ID: {article_id}")
-            print(f"  文章链接: {article_url}")
-            print(f"  状态: {topic_data.get('process_status', 'unknown')}")
-            return topic_result
-        else:
-            print(f"  [WARN] 文章已创建但话题关联失败")
-            if topic_result:
-                code = topic_result.get("code", "?")
-                print(f"  错误码: {code}")
-                print(f"  响应: {json.dumps(topic_result, ensure_ascii=False)}")
-            print(f"  文章ID: {article_id} (可手动关联)")
-            self._record_history(
-                publish_type="article",
-                title=title,
-                article_id=article_id,
-                article_url=article_url,
-                status="topic_failed",
-            )
-            # 返回话题创建失败的结果，让调用方能感知到失败
-            return topic_result if topic_result else {"succeeded": False, "code": "topic_creation_failed"}
+        if not topic_result or not topic_result.get("succeeded"):
+            print(f"  [FAIL] 话题创建失败（文章已建）: {json.dumps(topic_result, ensure_ascii=False)[:300]}")
+            return {"succeeded": True, "article_id": article_id, "article_url": article_url, "topic_fail": True}
 
-    def publish_file(
-        self, file_path: str, mode: str = "auto", tags: Optional[List[str]] = None
-    ) -> Dict[str, Any]:
-        """发布文件
+        topic_data = ((topic_result.get("resp_data") or {}).get("topic") or {})
+        print(f"  [OK] 话题已发布 topic_id={topic_data.get('topic_id')}")
 
-        Args:
-            file_path: Markdown 文件路径
-            mode: 发布模式 - "auto" (自动判断), "topic" (话题), "article" (文章)
-            tags: 可选标签列表
-        """
-        from config import ARTICLE_THRESHOLD
-
-        path = Path(file_path)
-        if not path.exists():
-            raise FileNotFoundError(f"文件不存在: {file_path}")
-
-        md_content = path.read_text(encoding="utf-8")
-        title, _ = extract_title_from_markdown(md_content)
-
-        print(f"发布文件: {path.name}")
-        print(f"标题: {title}")
-        print(f"字符数: {len(md_content)}")
-
-        # 自动判断模式
-        if mode == "auto":
-            mode = "article" if len(md_content) > ARTICLE_THRESHOLD else "topic"
-            print(f"自动选择模式: {mode}")
-
-        if mode == "article":
-            return self.publish_article(md_content, title=title, tags=tags, base_dir=path.parent)
-        else:
-            return self.publish_topic(md_content, title=title, tags=tags)
-
-    def _post(self, url: str, payload: Dict) -> Optional[Dict]:
-        """发送 POST 请求"""
-        headers = build_request_headers(self.base_headers)
-
-        try:
-            resp = requests.post(
-                url,
-                headers=headers,
-                cookies=self.cookies,
-                json=payload,
-                timeout=30,
-            )
-
-            if resp.status_code == 200:
-                return resp.json()
-            elif resp.status_code == 401:
-                print("  [ERROR] Cookie 已过期，请运行 login 命令重新登录授权")
-                return None
-            else:
-                print(f"  [ERROR] HTTP {resp.status_code}: {resp.text[:200]}")
-                return None
-
-        except requests.exceptions.Timeout:
-            print("  [ERROR] 请求超时")
-            return None
-        except requests.exceptions.ConnectionError:
-            print("  [ERROR] 网络连接失败")
-            return None
-        except Exception as e:
-            print(f"  [ERROR] 请求异常: {e}")
-            return None
-
-    def _record_history(self, **kwargs):
-        """记录发布历史"""
-        record = {
-            "timestamp": datetime.now().isoformat(),
-            "group_id": GROUP_ID,
-            **kwargs,
+        return {
+            "succeeded": True,
+            "article_id": article_id,
+            "article_url": article_url,
+            "topic_id": topic_data.get("topic_id"),
+            "process_status": topic_data.get("process_status"),
         }
-        self.history.append(record)
-        self._save_history()
 
-    def _load_history(self) -> list:
-        """加载发布历史"""
-        if PUBLISH_HISTORY_FILE.exists():
+    def _process_md_images(self, md_content: str, base_dir: Path) -> Tuple[str, List[int]]:
+        """处理 Markdown 中的图片引用，上传到 CDN 并替换 URL"""
+        image_ids: List[int] = []
+        pattern = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+        for m in pattern.finditer(md_content):
+            url = m.group(2)
+            if url.startswith(("http://", "https://")):
+                continue  # 远程图片暂不处理
+            img_path = base_dir / url if not Path(url).is_absolute() else Path(url)
+            if not img_path.exists():
+                continue
             try:
-                with open(PUBLISH_HISTORY_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, Exception):
-                return []
-        return []
+                up = upload_image(img_path)
+                image_ids.append(up["image_id"])
+                md_content = md_content.replace(url, up.get("url", url), 1)
+            except Exception as e:
+                print(f"    [WARN] 图片上传失败({img_path}): {e}")
+        return md_content, image_ids
 
-    def _save_history(self):
-        """保存发布历史"""
+    def _get_default_group_id(self) -> str:
+        """从 zsxq-cli group +list --json 读取默认 group_id"""
         try:
-            with open(PUBLISH_HISTORY_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.history, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"  [WARN] 保存发布历史失败: {e}")
-
-    def get_history(self, count: int = 10) -> list:
-        """获取最近的发布历史"""
-        return self.history[-count:]
+            out = _sh(["zsxq-cli", "group", "+list", "--json"])
+            data = json.loads(out)
+            groups = data.get("groups", [])
+            if groups:
+                return str(groups[0].get("group_id", ""))
+        except Exception:
+            pass
+        return ""

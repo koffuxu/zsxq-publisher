@@ -1,137 +1,126 @@
 ---
 name: zsxq-publisher
 description: |
-  [DEPRECATED] 旧版知识星球发布工具，基于逆向 Web API + 本地 Cookie。
-  仅供历史兼容与迁移参考；默认不要再用于新的知识星球发帖流程。
-  新流程统一改用 OpenClaw 官方 zsxq-cli / zsxq-topic / zsxq-group / zsxq-user 等 skills。
+  知识星球内容发布工具（二次封装版）。
+  
+  架构原则：
+  - 大部分操作直接透传到 OpenClaw 官方 zsxq skills（zsxq-cli / zsxq-group / zsxq-topic / zsxq-user / zsxq-note）
+  - 仅"发布带图长文章"需要本 skill 自持编排逻辑（官方 skills 未覆盖此流程）
+  
+  认证：统一走 zsxq-cli auth login（Keychain 管理），不再依赖 auth.json。
+  
+  触发词：发布到知识星球、zsxq-publisher、知识星球发布、发布话题、发布文章、带图发布
 allowed-tools: Bash, Read, Write, Glob, Grep
 mode-command: false
 ---
 
-# 知识星球内容发布工具（已过时）
+# 知识星球发布工具（zxsq-publisher）
 
-## 过时说明
+## 架构说明
 
-这个 skill 已经停止作为默认方案使用。
+本 skill 是对 OpenClaw 官方 zsxq skills 的**二次封装**：
 
-后续知识星球相关操作统一改为：
-- `zsxq-cli`
-- OpenClaw 官方 `zsxq-topic`
-- OpenClaw 官方 `zsxq-group`
-- OpenClaw 官方 `zsxq-user`
-- OpenClaw 官方 `zsxq-note`
+| 操作类型 | 处理方式 |
+|---------|---------|
+| 查询星球 / 话题 / 用户 | 透传到 `zsxq-cli` 官方工具 |
+| 发布普通帖子（talk） | 透传到 `zsxq-cli topic +create` |
+| 发布长文章（article + 配图） | **本 skill 自持**，调用 `zsxq-cli api raw` 实现两步流程 |
+| 认证管理 | 统一走 `zsxq-cli auth login`（不再用 auth.json） |
 
-保留本 skill 的目的仅有两个：
-1. 历史脚本迁移参考
-2. 紧急回滚时排查旧流程
+> **为什么文章发布需要自持？** 官方 `zsxq-cli topic +create` 仅支持纯文本/图片混合的 talk 类型。
+> 带图长文章需要：①先调 `/v2/articles` 创建文章，②再调 `/v2/groups/{id}/topics` 引用文章。
+> 这条两步流程官方 skills 未封装，所以需要本 skill 自行编排。
 
-## 概览
+## 运行器
 
-将内容发布到知识星球。
-
-支持两种发布模式：
-- **话题模式**（topic）：短内容，直接以富文本发布，<500字自动选择
-- **文章模式**（article）：长内容，两步流程（处理图片 → 创建文章 → 创建话题引用），>=500字自动选择
-  - 文章模式自动检测 Markdown 中的图片引用（本地路径或远程 URL），上传至知识星球 CDN
-
-## 运行器路径
-
-所有命令通过 `run.py` 运行器执行，它会自动管理虚拟环境和依赖安装：
-
-```
+```bash
 RUN = "~/.claude/skills/zsxq-publisher/scripts/run.py"
 ```
 
 ## 命令参考
 
-### 1. 浏览器登录授权（Cookie 过期时使用）
+### 1. 认证相关（透传官方）
 
 ```bash
-python "${RUN}" main.py login --timeout 120
-```
-
-- 自动打开 Chrome 浏览器到知识星球登录页
-- 用户扫码登录后，自动提取 Cookie 并保存到 auth.json
-- 登录一次后 Cookie 长期有效，无需频繁登录
-- `--timeout` 可选，登录等待超时秒数，默认 120
-
-### 2. 检查认证状态
-
-```bash
+# 检查认证状态
 python "${RUN}" main.py check-auth
+
+# 浏览器登录（OAuth 设备码流程）
+python "${RUN}" main.py login
+
+# 查看星球列表（官方工具）
+zsxq-cli group +list
 ```
 
-- 如果认证过期，会提示运行 login 命令
+> 认证由 `zsxq-cli` 管理（Keychain），登录一次后长期有效。
 
-### 3. 发布本地文件（自动判断模式）
+### 2. 查询类（透传官方）
 
 ```bash
-python "${RUN}" main.py publish --file "<文件路径>" --tags "标签1,标签2"
+# 搜索话题
+zsxq-cli topic +search --group-id <id> --query "<关键词>"
+
+# 查看话题详情
+zsxq-cli topic +detail --topic-id <id>
+
+# 查看用户足迹
+zsxq-cli api call get_user_footprints --params '{"user_id":"...","group_id":"..."}'
 ```
 
-### 4. 发布话题（短内容）
-
-从文本发布：
-```bash
-python "${RUN}" main.py topic --text "话题内容文本" --title "可选标题" --tags "标签1,标签2"
-```
-
-从文件发布：
-```bash
-python "${RUN}" main.py topic --file "<文件路径>" --title "可选标题" --tags "标签1"
-```
-
-### 5. 发布文章（长内容）
+### 3. 发布普通话题（透传官方）
 
 ```bash
-python "${RUN}" main.py article --file "<Markdown文件路径>" --title "可选标题" --tags "标签1,标签2"
+# 通过 zsxq-publisher 快捷发布
+python "${RUN}" main.py topic --text "内容" --title "标题" --tags "标签1,标签2"
+
+# 或直接用官方 zsxq-cli
+zsxq-cli topic +create --group-id <id> --title "标题" --content "正文"
 ```
 
-### 6. 查看发布历史
+### 4. 发布长文章（含配图）— 本 skill 自持
 
 ```bash
-python "${RUN}" main.py history --count 10
+# 发布 Markdown 文件为知识星球文章（含图片自动上传）
+python "${RUN}" main.py article --file "./weekly_report.md" --title "周报标题" --tags "周报"
+
+# 发布时额外附带一张长图（如海报）
+python "${RUN}" main.py article --file "./report.md" --image "./cover.png" --title "标题"
 ```
 
-## 工作流场景
+**发布流程（两步）：**
+1. 上传图片到知识星球 CDN（image_id）
+2. `POST /v2/articles` 创建文章（带 image_ids）
+3. `POST /v2/groups/{id}/topics` 创建引用文章的主题
 
-### 场景 A：认证过期 → 自动登录 → 发布
+### 5. 自动判断模式
 
-1. 先运行 `check-auth` 检查认证状态
-2. 如果过期，运行 `login` 命令打开浏览器
-3. 用户在浏览器中扫码登录
-4. Cookie 自动保存到 auth.json
-5. 继续执行发布操作
+```bash
+# 根据内容长度自动选择 talk 或 article 模式
+python "${RUN}" main.py publish --file "./content.md" --tags "标签"
+```
 
-**重要**: 当 check-auth 或发布命令报告认证过期时，必须先运行 login 命令。
+## 认证与权限说明
 
-### 场景 B：用户提供文本内容发布
+- **无需 auth.json**：认证统一由 `zsxq-cli` 管理（OAuth → Keychain）
+- **登录一次后长期有效**：通常数周到数月
+- **权限范围**：当前登录账号有权限的所有星球
 
-1. 用户说 "发布到知识星球：xxx内容"
-2. 先 check-auth，如过期则 login
-3. 判断内容长度选择话题/文章模式
-4. 执行发布命令
-5. 报告发布结果
+## 与官方 zsxq skills 的分工
 
-### 场景 C：用户指定本地文件发布
+| 场景 | 使用方式 |
+|------|---------|
+| 查询星球成员、搜索话题 | 直接用 `zsxq-cli group +list` / `zsxq-cli topic +search` |
+| 发布普通帖子 | 直接用 `zsxq-cli topic +create` |
+| 发布带图长文章 | **通过 zsxq-publisher**：本 skill 编排两步流程 |
+| 管理笔记、回复评论 | 直接用 `zsxq-cli note` / `zsxq-cli topic +reply` |
 
-1. 用户说 "把 xxx.md 发布到知识星球"
-2. 先 check-auth，如过期则 login
-3. Read 文件确认内容
-4. 使用 `publish --file` 命令
-5. 报告发布结果
+## 依赖
 
-### 场景 D：从飞书文档发布
+- `zsxq-cli`（必须，已包含在 OpenClaw 官方技能中）
+- Python 3.9+
+- `requests`（图片上传用，已在 .venv 中）
 
-1. 用户提供飞书文档链接或 document_id
-2. 使用 lark-mcp 工具读取飞书文档内容
-3. 将内容保存为临时 .md 文件
-4. 使用 `publish --file` 发布
+## 安全注意
 
-## 注意事项
-
-- 发布后内容需审核，状态 `in_review` 是正常的
-- 话题最大文本长度 10000 字符
-- 建议批量发布时每篇间隔 3-5 秒
-- 登录一次后 Cookie 长期有效（通常数周到数月）
-- 如浏览器登录失败，检查 Chrome 是否正常安装
+- 发布前确认目标星球和内容（不可撤销的公开操作）
+- 不确定 group_id 时先查询再操作

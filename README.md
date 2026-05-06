@@ -1,187 +1,88 @@
-# zsxq-publisherer
+# zsxq-publisher
 
-> Deprecated：此 skill 已不再作为默认知识星球发布方案。
->
-> 后续请改用 OpenClaw 官方 `zsxq-cli` + `zsxq-topic / zsxq-group / zsxq-user / zsxq-note` skills。
->
-> 当前目录仅为历史兼容保留，用于迁移与回滚参考。
+> 知识星球内容发布工具（二次封装版）。  
+> 大部分操作透传到 OpenClaw 官方 zsxq skills，仅"发布带图长文章"需要本 skill 自持编排。
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+## 架构原则
 
-知识星球内容发布工具 — Claude Code Skill
-
-将本地 Markdown 文件或文本内容一键发布到知识星球，支持话题和长文章两种模式。
-
-## 功能特性
-
-- **话题发布**：短内容直接发布，支持加粗标题 + 标签
-- **文章发布**：长内容自动走两步流程（创建文章 → 创建话题引用）
-- **图片上传**：自动检测 Markdown 中的图片引用（本地/远程），上传至知识星球 CDN；SVG 自动转 PNG
-- **自动判断**：根据内容长度自动选择话题/文章模式（阈值 500 字符）
-- **Markdown 转换**：自动将 Markdown 转为知识星球富文本格式
-- **浏览器登录**：Cookie 过期时自动打开 Chrome 扫码登录，登录后持久化保存
-- **发布历史**：本地记录每次发布的话题ID、文章链接、时间等信息
-
-## 环境要求
-
-- Python 3.9+
-- Chrome 浏览器（用于扫码登录）
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
-- [Cairo](https://www.cairographics.org/) 系统库（SVG → PNG 转换，可选）：macOS 下 `brew install cairo`
+- **查询 / 普通帖子**：透传到 `zsxq-cli` 官方工具
+- **带图长文章发布**：本 skill 通过 `zsxq-cli api raw` 实现两步流程（官方 skills 未覆盖）
+- **认证**：统一走 `zsxq-cli auth login`（Keychain），不再依赖 auth.json
 
 ## 安装
 
 ```bash
-git clone https://github.com/koffuxu/zsxq-publisherer.git ~/.claude/skills/zsxq-publisherer
+# 已在 OpenClaw 环境中可用（zsxq-cli 默认已安装）
+# 如需独立安装：
+git clone https://github.com/koffuxu/zsxq-publisher.git ~/.claude/skills/zsxq-publisher
 ```
 
-## 首次配置
+## 快速开始
 
-### 1. 运行配置向导
-
-```bash
-python ~/.claude/skills/zsxq-publisher/scripts/run.py main.py setup
-```
-
-按提示输入：
-- **星球 ID**：从星球页面 URL 中获取（`https://wx.zsxq.com/group/这里的数字`）
-- **auth.json 路径**：Cookie 认证文件存放位置，留空使用默认路径 `~/.private_key/zsxq-publisher/auth.json`
-
-### 2. 登录授权
+### 1. 登录认证
 
 ```bash
 python ~/.claude/skills/zsxq-publisher/scripts/run.py main.py login
+# 或直接
+zsxq-cli auth login
 ```
 
-自动打开 Chrome 浏览器到知识星球登录页，用微信扫码后 Cookie 会自动保存。登录一次后长期有效（通常数周到数月）。
-
-### 3. 验证
+### 2. 发布文章（含图）
 
 ```bash
-python ~/.claude/skills/zsxq-publisher/scripts/run.py main.py check-auth
+python ~/.claude/skills/zsxq-publisher/scripts/run.py main.py article \
+  --file "./weekly_report.md" \
+  --title "创作周报 2026-05-06" \
+  --tags "周报"
 ```
 
-看到 `[OK] 认证有效` 即可开始使用。
-
-## 使用方式
-
-### 在 Claude Code 中使用（推荐）
-
-安装完成后，在 Claude Code 对话中直接说：
-
-- "把 xxx.md 发布到知识星球"
-- "发布一个话题，标题是xxx，内容是xxx"
-- "检查知识星球认证状态"
-- "查看发布历史"
-
-Claude 会自动调用此技能完成操作。
-
-### 命令行使用
+### 3. 发布普通话题
 
 ```bash
-# 简写
-RUN="~/.claude/skills/zsxq-publisher/scripts/run.py"
-
-# 发布文件（自动判断话题/文章）
-python $RUN main.py publish --file "文章.md" --tags "标签1,标签2"
-
-# 发布话题（短内容）
-python $RUN main.py topic --text "话题内容" --title "标题" --tags "标签"
-
-# 发布文章（长内容）
-python $RUN main.py article --file "长文.md" --title "文章标题"
-
-# 查看发布历史
-python $RUN main.py history
-
-# 检查认证状态
-python $RUN main.py check-auth
-
-# 重新登录
-python $RUN main.py login
-
-# 重新配置
-python $RUN main.py setup
+python ~/.claude/skills/zsxq-publisher/scripts/run.py main.py topic \
+  --text "分享一个 AI 工具使用技巧" \
+  --title "技巧分享" \
+  --tags "AI"
 ```
+
+## 与官方 zsxq skills 的分工
+
+| 操作 | 推荐工具 |
+|------|---------|
+| 查询星球 / 搜索话题 | `zsxq-cli group +list` / `zsxq-cli topic +search` |
+| 发布普通帖子 | `zsxq-cli topic +create` |
+| 发布带图长文章 | **zsxq-publisher**（两步流程 + 图片上传） |
+| 笔记 / 评论 / 回复 | `zsxq-cli note` / `zsxq-cli topic +reply` |
 
 ## 文件结构
 
 ```
 zsxq-publisher/
-├── SKILL.md                    # Claude Code 技能定义
+├── SKILL.md                    # 本 skill 定义（描述/触发词/工作流）
 ├── README.md                   # 本文件
-├── requirements.txt            # Python 依赖（requests, markdown, selenium）
-├── .gitignore
-├── scripts/
-│   ├── run.py                 # 虚拟环境自动管理运行器
-│   ├── main.py                # CLI 入口（7 个子命令）
-│   ├── config.py              # 可移植配置模块（首次交互式设置）
-│   ├── auth.py                # Cookie 认证管理
-│   ├── login.py               # Selenium 浏览器自动登录
-│   ├── publisher.py           # 核心发布逻辑
-│   └── markdown_converter.py  # Markdown → 知识星球格式转换
-└── data/                       # 运行时数据（gitignored）
-    └── publish_history.json   # 发布历史记录
-
-敏感配置统一保存在 `~/.private_key/zsxq-publisher/`：
-
-```text
-~/.private_key/zsxq-publisher/
-├── auth.json                  # Cookie 认证信息
-├── user_config.json           # 当前默认星球配置
-└── groups.json                # 星球列表
+├── requirements.txt            # Python 依赖
+└── scripts/
+    ├── run.py                  # 虚拟环境管理运行器
+    ├── main.py                 # CLI 入口（7 个子命令）
+    ├── auth.py                 # 认证封装（透传 zsxq-cli）
+    ├── publisher.py            # 发布核心逻辑（两步流程 + 图片上传）
+    └── markdown_converter.py  # Markdown → 知识星球格式转换
 ```
 
+## 认证说明
 
-## 工作原理
-
-### 知识星球 API
-
-本工具通过逆向工程的知识星球 Web API 实现发布功能：
-
-- **话题发布**：`POST /v2/groups/{group_id}/topics`
-- **文章发布**：`POST /v2/articles`（创建文章）→ `POST /v2/groups/{group_id}/topics`（创建引用话题）
-- **认证方式**：Cookie（`zsxq_access_token`）
-
-### 内容格式
-
-- **话题**：纯文本 + XML 标签（`<e type="text_bold"/>` 加粗、`<e type="hashtag"/>` 标签）
-- **文章**：标准 HTML（`<p>`、`<h3>`、`<strong>`、`<a>` 等）
-
-### 虚拟环境
-
-`run.py` 运行器会自动：
-1. 创建 `.venv/` 虚拟环境
-2. 安装 `requirements.txt` 中的依赖
-3. 在隔离环境中执行目标脚本
-
-无需手动管理依赖。
+- **不再需要 auth.json**：认证由 `zsxq-cli` 管理（OAuth 2.0 → Keychain）
+- 登录一次后长期有效，无需频繁登录
+- 如认证过期，运行 `zsxq-cli auth login` 重新授权
 
 ## 常见问题
 
-**Q: 发布后状态显示 `in_review` 是什么意思？**
-A: 这是正常的，知识星球会对内容进行审核，审核通过后自动展示。
+**Q: 为什么发布长文章需要专门的 skill，而普通帖子不需要？**  
+A: 普通 talk 类型官方 `zsxq-cli topic +create` 已覆盖。
+长文章（article）需要两步：先 `POST /v2/articles` 再 `POST /v2/groups/{id}/topics` 引用文章，且需要预先上传图片获得 image_ids。这条流程官方 skills 尚未封装，故由本 skill 承担。
 
-**Q: Cookie 多久过期？**
-A: 通常数周到数月。过期后运行 `login` 命令重新扫码即可。
+**Q: auth.json 还需要保留吗？**  
+A: 不需要。认证已迁移到 zsxq-cli。旧的 auth.json 可以删除。
 
-**Q: 支持图片上传吗？**
-A: 支持。文章模式会自动检测 Markdown 中的图片引用（本地相对/绝对路径或远程 URL），上传至知识星球 CDN 并在文章中正确渲染。
-
-**Q: 除了 Chrome 还支持什么浏览器？**
-A: 支持 Chrome 和 Edge，优先使用 Chrome，Chrome 不可用时自动回退到 Edge。
-
-## Star 增长
-
-[![Star History Chart](https://api.star-history.com/svg?repos=koffuxu/zsxq-publisher&type=Date)](https://star-history.com/#koffuxu/zsxq-publisher&Date)
-
-## 作者
-
-| 平台 | 链接 |
-|---|---|
-| X（Twitter） | [@koffuxu](https://x.com/koffuxu) |
-| 微信公众号 | 可夫小子 |
-
-## License
-
-[MIT](LICENSE)
+**Q: 图片上传支持的格式？**  
+A: PNG、JPG、GIF、WebP。SVG 暂不支持。

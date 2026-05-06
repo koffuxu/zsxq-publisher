@@ -3,215 +3,234 @@
 """知识星球发布工具 - 主入口
 
 用法:
-  main.py setup                          首次配置（星球ID、认证路径）
+  main.py setup                          首次配置（通过 zsxq-cli auth login）
   main.py login                          浏览器登录授权
-  main.py publish --file <path>          发布文件（自动判断话题/文章）
+  main.py check-auth                    检查认证状态
+  main.py publish --file <path>         发布文件（自动判断话题/文章）
   main.py topic --text <text> [--tags t] 发布话题（短内容）
-  main.py article --file <path>          发布文章（长内容）
+  main.py article --file <path>         发布文章（长内容，带图）
   main.py history                        查看发布历史
-  main.py check-auth                     检查认证状态
+
+日常操作优先委托给 zsxq-cli 官方 skill；仅文章发布（两步流程+图片）由本工具自持。
 """
+
+from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
+from pathlib import Path
+from typing import Optional
+
+from publisher import ZsxqPublisher
 
 
-def _ensure_configured():
-    """确保用户已完成首次配置，未配置则自动引导"""
-    from config import get_user_config
+# ── zsxq-cli 代理 ──────────────────────────────────────────────
 
-    get_user_config()
+def _sh(cmd: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
+
+# ── 命令实现 ─────────────────────────────────────────────────
 
 def cmd_setup(args):
-    """首次配置或重新配置"""
-    from config import setup_wizard
-
-    setup_wizard()
+    print("zsxq-publisher 已重构为基于 zsxq-cli 的发布工具。")
+    print("认证请直接运行: zsxq-cli auth login")
+    print("配置 group_id 请运行: zsxq-cli group +list")
     return 0
 
 
-def cmd_publish(args):
-    """发布文件（自动判断模式）"""
-    from publisher import ZsxqPublisher
-
-    pub = ZsxqPublisher()
-    tags = args.tags.split(",") if args.tags else None
-    result = pub.publish_file(args.file, mode="auto", tags=tags)
-    return 0 if result.get("succeeded") else 1
-
-
-def cmd_topic(args):
-    """发布话题"""
-    from publisher import ZsxqPublisher
-
-    pub = ZsxqPublisher()
-    tags = args.tags.split(",") if args.tags else None
-
-    if args.file:
-        from pathlib import Path
-
-        text = Path(args.file).read_text(encoding="utf-8")
-    elif args.text:
-        text = args.text
-    else:
-        print("[error] 请提供 --text 或 --file 参数")
-        return 1
-
-    result = pub.publish_topic(text, title=args.title or "", tags=tags)
-    return 0 if result.get("succeeded") else 1
-
-
-def cmd_article(args):
-    """发布文章"""
-    from publisher import ZsxqPublisher
-
-    pub = ZsxqPublisher()
-    tags = args.tags.split(",") if args.tags else None
-
-    if not args.file:
-        print("[error] 文章模式必须提供 --file 参数")
-        return 1
-
-    from pathlib import Path
-
-    md_content = Path(args.file).read_text(encoding="utf-8")
-    result = pub.publish_article(md_content, title=args.title or "", tags=tags, base_dir=Path(args.file).parent)
-    return 0 if result.get("succeeded") else 1
-
-
-def cmd_history(args):
-    """查看发布历史"""
-    from publisher import ZsxqPublisher
-
-    pub = ZsxqPublisher()
-    records = pub.get_history(count=args.count)
-
-    if not records:
-        print("暂无发布历史")
+def cmd_login(args):
+    """启动浏览器登录（通过 zsxq-cli auth login）"""
+    p = _sh(["zsxq-cli", "auth", "login"])
+    if p.returncode == 0:
+        print("[OK] 登录成功")
         return 0
-
-    print(f"最近 {len(records)} 条发布记录:\n")
-    for i, rec in enumerate(reversed(records), 1):
-        print(f"  {i}. [{rec.get('publish_type', '?')}] {rec.get('title', '未知')}")
-        print(f"     时间: {rec.get('timestamp', '?')}")
-        print(f"     状态: {rec.get('status', '?')}")
-        if rec.get("article_url"):
-            print(f"     链接: {rec['article_url']}")
-        print()
-
-    return 0
+    else:
+        print(f"[FAIL] 登录失败: {p.stderr}")
+        return 1
 
 
 def cmd_check_auth(args):
     """检查认证状态"""
-    from auth import load_auth, check_auth_status
-
-    try:
-        cookies, headers = load_auth()
-        print("[OK] auth.json 加载成功")
-        print(f"  access_token: {cookies.get('zsxq_access_token', '?')[:20]}...")
-    except Exception as e:
-        print(f"[FAIL] {e}")
-        print("\n提示: 运行 login 命令进行浏览器登录授权")
-        return 1
-
-    print("正在验证认证有效性...")
-    if check_auth_status(cookies, headers):
-        print("[OK] 认证有效")
+    from auth import check_auth
+    ok, msg = check_auth()
+    if ok:
+        print(f"[OK] 已登录：{msg}")
         return 0
     else:
-        print("[FAIL] 认证已过期")
-        print("\n提示: 运行 login 命令进行浏览器登录授权")
+        print(f"[FAIL] 未登录：{msg}")
+        print("提示: zsxq-cli auth login")
         return 1
 
 
-def cmd_login(args):
-    """浏览器登录授权"""
-    from login import browser_login
+def cmd_publish(args):
+    """发布文件（自动判断模式）"""
+    from publisher import api_raw, markdown_to_topic_text, format_hashtags, extract_title_from_markdown, markdown_to_article_html
+    import time, random
 
-    print("启动浏览器登录知识星球...")
-    print("请在弹出的浏览器窗口中扫码登录\n")
+    md_text = Path(args.file).read_text(encoding="utf-8")
+    tags = args.tags.split(",") if args.tags else None
 
-    timeout = args.timeout if hasattr(args, "timeout") else 120
-    success = browser_login(timeout=timeout)
+    # 简单判断：超过 500 字视为文章
+    if len(md_text) >= 500:
+        return cmd_article_argparse(Path(args.file).read_text(encoding="utf-8"), args.title or "", tags)
 
-    if success:
-        # 登录后验证
-        print("\n正在验证新的认证信息...")
-        from auth import load_auth, check_auth_status
+    # 短内容：直接用 zsxq-cli topic +create
+    title, body = extract_title_from_markdown(md_text)
+    topic_text = markdown_to_topic_text(body or md_text, title=title or args.title or "")
+    if tags:
+        topic_text += "\n" + format_hashtags(tags)
 
-        try:
-            cookies, headers = load_auth()
-            if check_auth_status(cookies, headers):
-                print("[OK] 认证验证通过，可以正常发布了！")
-                return 0
-            else:
-                print("[WARN] Cookie 已保存但 API 验证未通过，请稍后重试")
-                return 1
-        except Exception as e:
-            print(f"[WARN] 验证异常: {e}")
-            return 1
+    p = _sh(["zsxq-cli", "group", "+list", "--json"])
+    if p.returncode != 0:
+        print("[FAIL] 无法获取 group 列表")
+        return 1
+    data = json.loads(p.stdout)
+    groups = data.get("groups", []) or []
+    if not groups:
+        print("[FAIL] 未找到任何星球")
+        return 1
+    gid = str(groups[0].get("group_id", ""))
+
+    out = _sh([
+        "zsxq-cli", "topic", "+create",
+        "--group-id", gid,
+        "--title", title or args.title or "",
+        "--content", topic_text,
+        "--json",
+    ])
+    if p.returncode == 0:
+        print("[OK] 话题发布成功")
+        return 0
     else:
-        print("[FAIL] 登录失败，请重试")
+        print(f"[FAIL] {out.stderr or out.stdout}")
         return 1
 
+
+def cmd_topic(args):
+    """发布话题"""
+    if args.file:
+        text = Path(args.file).read_text(encoding="utf-8")
+    elif args.text:
+        text = args.text
+    else:
+        print("[error] 请提供 --text 或 --file")
+        return 1
+
+    # 获取默认 group
+    p = _sh(["zsxq-cli", "group", "+list", "--json"])
+    if p.returncode != 0:
+        print("[FAIL] 无法获取 group 列表")
+        return 1
+    data = json.loads(p.stdout)
+    groups = data.get("groups", []) or []
+    if not groups:
+        print("[FAIL] 未找到任何星球")
+        return 1
+    gid = str(groups[0].get("group_id", ""))
+
+    title = args.title or ""
+    tags = args.tags.split(",") if args.tags else None
+
+    out = _sh([
+        "zsxq-cli", "topic", "+create",
+        "--group-id", gid,
+        "--title", title,
+        "--content", text,
+        "--json",
+    ])
+    if out.returncode == 0:
+        print("[OK] 话题发布成功")
+        return 0
+    else:
+        print(f"[FAIL] {out.stderr or out.stdout}")
+        return 1
+
+
+def cmd_article(args):
+    """发布文章（长内容，两步流程）"""
+    if not args.file:
+        print("[error] 请提供 --file 参数")
+        return 1
+
+    md_content = Path(args.file).read_text(encoding="utf-8")
+    title = args.title or ""
+    tags = args.tags.split(",") if args.tags else None
+    image_path = Path(args.image) if getattr(args, "image", None) else None
+    base_dir = Path(args.file).parent
+
+    # 如果没指定 group_id，使用配置文件中的默认群组
+    group_id = args.group_id if getattr(args, "group_id", None) else None
+
+    pub = ZsxqPublisher()
+    result = pub.publish_article(
+        md_content=md_content,
+        title=title,
+        group_id=group_id or "",
+        tags=tags,
+        image_path=image_path,
+        base_dir=base_dir,
+    )
+
+    if result.get("succeeded"):
+        print(f"[OK] 文章发布成功")
+        print(f"  article_id: {result.get('article_id')}")
+        print(f"  article_url: {result.get('article_url')}")
+        if result.get("topic_id"):
+            print(f"  topic_id: {result.get('topic_id')}")
+        return 0
+    else:
+        print(f"[FAIL] {json.dumps(result, ensure_ascii=False)[:300]}")
+        return 1
+
+
+def cmd_history(args):
+    """查看发布历史（通过 zsxq-cli topic +search）"""
+    print("zsxq-publisher 暂不维护本地发布历史。")
+    print("可用 zsxq-cli topic +search <keyword> 查询历史主题。")
+    return 0
+
+
+# ── 主入口 ───────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
-        description="知识星球内容发布工具",
+        description="知识星球内容发布工具（基于 zsxq-cli）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    subparsers = parser.add_subparsers(dest="command", help="可用命令")
+    sub = parser.add_subparsers(dest="command", help="可用命令")
 
-    # setup 命令
-    p_setup = subparsers.add_parser("setup", help="首次配置（星球ID、认证路径）")
-    p_setup.set_defaults(func=cmd_setup)
+    sub.add_parser("setup", help="查看配置说明").set_defaults(func=cmd_setup)
+    sub.add_parser("login", help="浏览器登录授权").set_defaults(func=cmd_login)
+    sub.add_parser("check-auth", help="检查认证状态").set_defaults(func=cmd_check_auth)
+    sub.add_parser("history", help="查看发布历史").set_defaults(func=cmd_history)
 
-    # publish 命令
-    p_publish = subparsers.add_parser("publish", help="发布文件（自动判断模式）")
-    p_publish.add_argument("--file", "-f", required=True, help="Markdown 文件路径")
-    p_publish.add_argument("--tags", "-t", help="标签（逗号分隔）")
-    p_publish.set_defaults(func=cmd_publish)
+    p_pub = sub.add_parser("publish", help="发布文件（自动判断话题/文章）")
+    p_pub.add_argument("--file", "-f", required=True)
+    p_pub.add_argument("--tags", "-t")
+    p_pub.set_defaults(func=cmd_publish)
 
-    # topic 命令
-    p_topic = subparsers.add_parser("topic", help="发布话题（短内容）")
-    p_topic.add_argument("--text", help="话题文本内容")
-    p_topic.add_argument("--file", "-f", help="从文件读取内容")
-    p_topic.add_argument("--title", help="话题标题")
-    p_topic.add_argument("--tags", "-t", help="标签（逗号分隔）")
+    p_topic = sub.add_parser("topic", help="发布话题（短内容）")
+    p_topic.add_argument("--text")
+    p_topic.add_argument("--file", "-f")
+    p_topic.add_argument("--title")
+    p_topic.add_argument("--tags", "-t")
     p_topic.set_defaults(func=cmd_topic)
 
-    # article 命令
-    p_article = subparsers.add_parser("article", help="发布文章（长内容）")
-    p_article.add_argument("--file", "-f", required=True, help="Markdown 文件路径")
-    p_article.add_argument("--title", help="文章标题（默认从 Markdown 提取）")
-    p_article.add_argument("--tags", "-t", help="标签（逗号分隔）")
-    p_article.set_defaults(func=cmd_article)
-
-    # history 命令
-    p_history = subparsers.add_parser("history", help="查看发布历史")
-    p_history.add_argument("--count", "-n", type=int, default=10, help="显示条数")
-    p_history.set_defaults(func=cmd_history)
-
-    # check-auth 命令
-    p_auth = subparsers.add_parser("check-auth", help="检查认证状态")
-    p_auth.set_defaults(func=cmd_check_auth)
-
-    # login 命令
-    p_login = subparsers.add_parser("login", help="浏览器登录授权")
-    p_login.add_argument(
-        "--timeout", type=int, default=120, help="登录超时时间（秒，默认120）"
-    )
-    p_login.set_defaults(func=cmd_login)
+    p_art = sub.add_parser("article", help="发布文章（长内容）")
+    p_art.add_argument("--file", "-f", required=True)
+    p_art.add_argument("--title")
+    p_art.add_argument("--tags", "-t")
+    p_art.add_argument("--image")
+    p_art.add_argument("--group-id", "-g")
+    p_art.set_defaults(func=cmd_article)
 
     args = parser.parse_args()
-
     if not args.command:
         parser.print_help()
-        return 1
-
+        return 0
     return args.func(args)
 
 
