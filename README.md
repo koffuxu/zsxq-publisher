@@ -1,5 +1,11 @@
 # zsxq-publisherer
 
+> Deprecated：此 skill 已不再作为默认知识星球发布方案。
+>
+> 后续请改用 OpenClaw 官方 `zsxq-cli` + `zsxq-topic / zsxq-group / zsxq-user / zsxq-note` skills。
+>
+> 当前目录仅为历史兼容保留，用于迁移与回滚参考。
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 知识星球内容发布工具 — Claude Code Skill

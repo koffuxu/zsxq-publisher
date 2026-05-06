@@ -1,17 +1,29 @@
 ---
 name: zsxq-publisher
 description: |
-  知识星球内容发布工具。将本地 Markdown 文件或文本内容快速发布到知识星球。
-  支持话题（短内容）和长文章两种模式，文章模式自动上传 Markdown 中的图片到知识星球 CDN。
-  自动处理 Markdown 到知识星球富文本格式的转换。
-  Cookie 过期时自动提示浏览器登录授权，登录后持久化保存。
-  当用户需要：(1) 发布内容到知识星球，(2) 发布带图片文章，(3) 查看发布历史，(4) 登录授权时使用。
-  触发词：发布到知识星球、zsxq-publisher、知识星球发布、发布话题、发布文章
+  [DEPRECATED] 旧版知识星球发布工具，基于逆向 Web API + 本地 Cookie。
+  仅供历史兼容与迁移参考；默认不要再用于新的知识星球发帖流程。
+  新流程统一改用 OpenClaw 官方 zsxq-cli / zsxq-topic / zsxq-group / zsxq-user 等 skills。
 allowed-tools: Bash, Read, Write, Glob, Grep
 mode-command: false
 ---
 
-# 知识星球内容发布工具
+# 知识星球内容发布工具（已过时）
+
+## 过时说明
+
+这个 skill 已经停止作为默认方案使用。
+
+后续知识星球相关操作统一改为：
+- `zsxq-cli`
+- OpenClaw 官方 `zsxq-topic`
+- OpenClaw 官方 `zsxq-group`
+- OpenClaw 官方 `zsxq-user`
+- OpenClaw 官方 `zsxq-note`
+
+保留本 skill 的目的仅有两个：
+1. 历史脚本迁移参考
+2. 紧急回滚时排查旧流程
 
 ## 概览
 
