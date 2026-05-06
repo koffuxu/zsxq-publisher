@@ -376,7 +376,8 @@ class ZsxqPublisher:
                 up = upload_image(img_path)
                 image_ids.append(up["image_id"])
                 print(f"    [OK] 图片已上传: {img_path.name} → image_id={up['image_id']}")
-                return f'<img src="{up.get(\"url\", url)}" />'
+                up_url = up.get("url", url)
+                return f'<img src="{up_url}" />'
             except Exception as e:
                 print(f"    [WARN] 图片上传失败({img_path}): {e}")
                 return m.group(0)
