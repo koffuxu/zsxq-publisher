@@ -121,12 +121,19 @@ def markdown_to_article_html(md_text: str) -> str:
                 html.append("</ul>")
                 in_ul = False
             continue
-        # 知识星球图片 URL → <img> 标签
+        # 知识星球图片 URL（替换后的纯 URL 行）→ <img> 标签
         if ZSXQ_IMG_PATTERN.match(line):
             if in_ul:
                 html.append("</ul>")
                 in_ul = False
             html.append(f'<img src="{line}" />')
+            continue
+        # HTML <img> 标签（由 _process_md_images 直接生成）→ 直接保留
+        if line.startswith("<img"):
+            if in_ul:
+                html.append("</ul>")
+                in_ul = False
+            html.append(line)
             continue
         if line.startswith("# "):
             if in_ul:
@@ -352,23 +359,30 @@ class ZsxqPublisher:
         }
 
     def _process_md_images(self, md_content: str, base_dir: Path) -> Tuple[str, List[int]]:
-        """处理 Markdown 中的图片引用，上传到 CDN 并替换 URL"""
+        """处理 Markdown 中的图片引用，上传到 CDN 并替换为 HTML <img> 标签"""
         image_ids: List[int] = []
+        # 匹配 markdown 图片语法：![alt](url)
         pattern = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
-        for m in pattern.finditer(md_content):
+
+        def replace_match(m: re.Match) -> str:
+            """上传图片并替换为 <img src=ZSXQ_CDN_URL>"""
             url = m.group(2)
             if url.startswith(("http://", "https://")):
-                continue  # 远程图片暂不处理
+                return m.group(0)  # 远程图片保留原样
             img_path = base_dir / url if not Path(url).is_absolute() else Path(url)
             if not img_path.exists():
-                continue
+                return m.group(0)  # 文件不存在保留原样
             try:
                 up = upload_image(img_path)
                 image_ids.append(up["image_id"])
-                md_content = md_content.replace(url, up.get("url", url), 1)
+                print(f"    [OK] 图片已上传: {img_path.name} → image_id={up['image_id']}")
+                return f'<img src="{up.get(\"url\", url)}" />'
             except Exception as e:
                 print(f"    [WARN] 图片上传失败({img_path}): {e}")
-        return md_content, image_ids
+                return m.group(0)
+
+        new_content = pattern.sub(replace_match, md_content)
+        return new_content, image_ids
 
     def _get_default_group_id(self) -> str:
         """从 zsxq-cli group +list --json 读取默认 group_id"""
