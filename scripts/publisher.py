@@ -412,7 +412,7 @@ class ZsxqPublisher:
         # Step 2: 创建普通话题（摘要 + 文章链接）
         print(f"  [Step 2] 创建话题摘要与链接...")
         summary = self._build_article_summary(md_content, max_chars=180)
-        topic_lines = [title]
+        topic_lines = [f"<b>{title}</b>"]
         if summary:
             topic_lines.extend(["", summary])
         topic_lines.extend(["", "详细步骤见文章：", article_url])
