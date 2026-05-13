@@ -31,10 +31,22 @@ mode-command: false
 > 带图长文章需要：①先调 `/v2/articles` 创建文章，②再调 `/v2/groups/{id}/topics` 引用文章。
 > 这条两步流程官方 skills 未封装，所以需要本 skill 自行编排。
 
+## 星球配置
+
+配置文件位于 `~/.private_key/zsxq-publish/`：
+
+| 星球名称 | group_id | 类型 |
+|---------|---------|------|
+| AI编程与自动化 | `28882452841521` | 付费（默认发布目标） |
+| 人工智能成长写作 | `51128824585884` | 免费 |
+
+- 默认 group_id 从 `~/.private_key/zsxq-publish/user_config.json` 读取
+- 发布标题规则：**使用笔记原标题**，不使用 Notion「发布标题」字段（与其他平台不同）
+
 ## 运行器
 
 ```bash
-RUN = "~/.claude/skills/zsxq-publisher/scripts/run.py"
+RUN = "skills/zsxq-publisher/scripts/run.py"
 ```
 
 ## 命令参考

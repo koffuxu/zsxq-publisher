@@ -404,7 +404,15 @@ class ZsxqPublisher:
         return cut + '…'
 
     def _get_default_group_id(self) -> str:
-        """从 zsxq-cli group +list --json 读取默认 group_id"""
+        """优先读取 ~/.private_key/zsxq-publish/user_config.json，回退到 zsxq-cli 列表第一项"""
+        config_path = Path.home() / ".private_key/zsxq-publish/user_config.json"
+        try:
+            data = json.loads(config_path.read_text())
+            gid = str(data.get("group_id", "")).strip()
+            if gid:
+                return gid
+        except Exception:
+            pass
         try:
             out = _sh(["zsxq-cli", "group", "+list", "--json"])
             data = json.loads(out)
