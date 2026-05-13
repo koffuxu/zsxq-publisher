@@ -105,58 +105,150 @@ ZSXQ_IMG_PATTERN = re.compile(r"^https://article-images\.zsxq\.com/[A-Za-z0-9_-]
 MARKDOWN_IMG_PATTERN = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 
 
-def markdown_to_article_html(md_text: str) -> str:
-    """将 Markdown 转换为知识星球文章 HTML
+def _inline(text: str) -> str:
+    """处理内联 Markdown 格式：内联代码、加粗、斜体、链接。"""
+    text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
+    text = re.sub(r'\*\*([^*]+?)\*\*', r'<strong>\1</strong>', text)
+    text = re.sub(r'(?<!\*)\*([^*]+?)\*(?!\*)', r'<em>\1</em>', text)
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
+    return text
 
-    处理两种图片格式：
-    1. ZSXQ CDN URL（替换后纯 URL）：直接转为 <img src=...>
-    2. Markdown 图片语法 ![alt](url)：保留（由 _process_md_images 预处理后不会再出现）
+
+def markdown_to_article_html(md_text: str) -> str:
+    """将 Markdown 转换为知识星球文章 HTML。
+
+    支持：标题、段落、无序/有序列表、引用、代码块、表格、图片、内联格式。
     """
+    lines = md_text.splitlines()
     html: List[str] = []
     in_ul = False
-    for raw in md_text.splitlines():
+    in_ol = False
+    i = 0
+
+    def close_lists() -> None:
+        nonlocal in_ul, in_ol
+        if in_ul:
+            html.append("</ul>")
+            in_ul = False
+        if in_ol:
+            html.append("</ol>")
+            in_ol = False
+
+    while i < len(lines):
+        raw = lines[i]
         line = raw.strip()
+
+        # 空行
         if not line:
-            if in_ul:
-                html.append("</ul>")
-                in_ul = False
+            close_lists()
+            i += 1
             continue
-        # 知识星球图片 URL（替换后的纯 URL 行）→ <img> 标签
+
+        # 代码块
+        if line.startswith("```"):
+            close_lists()
+            code_lines: List[str] = []
+            i += 1
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                code_lines.append(lines[i])
+                i += 1
+            i += 1  # 跳过结束 ```
+            code = "\n".join(code_lines).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            html.append(f"<pre><code>{code}</code></pre>")
+            continue
+
+        # 表格（标题行 + 分隔行）
+        if line.startswith("|") and i + 1 < len(lines) and re.match(r"^\s*\|[\s|:-]+\|\s*$", lines[i + 1]):
+            close_lists()
+            table_lines: List[str] = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                table_lines.append(lines[i].strip())
+                i += 1
+            headers = [_inline(c.strip()) for c in table_lines[0].strip("|").split("|")]
+            rows = [
+                [_inline(c.strip()) for c in l.strip("|").split("|")]
+                for l in table_lines[2:]
+            ]
+            t = "<table><thead><tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr></thead><tbody>"
+            t += "".join("<tr>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>" for row in rows)
+            t += "</tbody></table>"
+            html.append(t)
+            continue
+
+        # 引用块（连续 > 行合并为一个 blockquote）
+        if line.startswith(">"):
+            close_lists()
+            quote_lines: List[str] = []
+            while i < len(lines) and (lines[i].strip().startswith(">") or lines[i].strip() == ">"):
+                stripped = lines[i].strip()
+                quote_lines.append(stripped[2:] if stripped.startswith("> ") else stripped[1:])
+                i += 1
+            content = "<br>".join(_inline(l) for l in quote_lines)
+            html.append(f"<blockquote>{content}</blockquote>")
+            continue
+
+        # 知识星球图片 CDN URL
         if ZSXQ_IMG_PATTERN.match(line):
-            if in_ul:
-                html.append("</ul>")
-                in_ul = False
+            close_lists()
             html.append(f'<img src="{line}" />')
+            i += 1
             continue
-        # HTML <img> 标签（由 _process_md_images 直接生成）→ 直接保留
+
+        # HTML <img> 标签
         if line.startswith("<img"):
-            if in_ul:
-                html.append("</ul>")
-                in_ul = False
+            close_lists()
             html.append(line)
+            i += 1
+            continue
+
+        # 标题
+        if line.startswith("### "):
+            close_lists()
+            html.append(f"<h3>{_inline(line[4:].strip())}</h3>")
+            i += 1
+            continue
+        if line.startswith("## "):
+            close_lists()
+            html.append(f"<h2>{_inline(line[3:].strip())}</h2>")
+            i += 1
             continue
         if line.startswith("# "):
-            if in_ul:
-                html.append("</ul>")
-                in_ul = False
-            html.append(f"<h1>{line[2:].strip()}</h1>")
-        elif line.startswith("## "):
-            if in_ul:
-                html.append("</ul>")
-                in_ul = False
-            html.append(f"<h2>{line[3:].strip()}</h2>")
-        elif line.startswith("- "):
+            close_lists()
+            html.append(f"<h1>{_inline(line[2:].strip())}</h1>")
+            i += 1
+            continue
+
+        # 无序列表
+        if re.match(r"^[-*] ", line):
+            if in_ol:
+                html.append("</ol>")
+                in_ol = False
             if not in_ul:
                 html.append("<ul>")
                 in_ul = True
-            html.append(f"<li>{line[2:].strip()}</li>")
-        else:
+            html.append(f"<li>{_inline(line[2:].strip())}</li>")
+            i += 1
+            continue
+
+        # 有序列表
+        ol_m = re.match(r"^\d+\.\s+(.+)$", line)
+        if ol_m:
             if in_ul:
                 html.append("</ul>")
                 in_ul = False
-            html.append(f"<p>{line}</p>")
-    if in_ul:
-        html.append("</ul>")
+            if not in_ol:
+                html.append("<ol>")
+                in_ol = True
+            html.append(f"<li>{_inline(ol_m.group(1))}</li>")
+            i += 1
+            continue
+
+        # 普通段落
+        close_lists()
+        html.append(f"<p>{_inline(line)}</p>")
+        i += 1
+
+    close_lists()
     return "\n".join(html)
 
 
