@@ -104,6 +104,30 @@ python "${RUN}" main.py article --file "./report.md" --image "./cover.png" --tit
 2. `POST /v2/articles` 创建文章（带 image_ids）
 3. `POST /v2/groups/{id}/topics` 创建引用文章的主题
 
+> **标题规则**：始终使用 `--title` 传入笔记**原标题**，不使用 Notion「发布标题」字段（与其他平台不同）。
+
+### 5. 话题预览（显式调用，非默认）
+
+发布前可生成本地 HTML 预览确认话题渲染效果，**默认不生成，只在用户明确要求时才执行**。
+
+预览脚本逻辑（内联运行）：
+
+```python
+# 生成话题预览 HTML，保存到文章同目录 zsxq_topic_preview.html
+import re, sys
+sys.path.insert(0, 'skills/zsxq-publisher/scripts')
+from publisher import build_summary  # 或内联 build_summary 函数
+
+md = open("<article.md>", encoding="utf-8").read()
+title = "<原始笔记标题>"
+article_url = "https://articles.zsxq.com/id_<article_id>.html"
+summary = build_summary(md)
+topic_text = f"<b>{title}</b>\n\n{summary}\n\n详细步骤见文章：\n{article_url}"
+# 将 topic_text 写入 HTML 文件并 open 预览
+```
+
+确认无误后再调用 api_raw 发布话题。话题摘要中 `**bold**` 会渲染为 `<strong>bold</strong>`（平台支持 HTML 标签）。
+
 ### 5. 自动判断模式
 
 ```bash

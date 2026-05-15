@@ -489,10 +489,13 @@ class ZsxqPublisher:
         text = re.sub(r'^[-*+]\s*', '', text, flags=re.M)
         text = re.sub(r'^\d+\.\s*', '', text, flags=re.M)
         text = re.sub(r'`{1,3}[^`]*`{1,3}', ' ', text)
+        # 将 Markdown 加粗/斜体渲染为 HTML（平台支持 HTML 标签）
+        text = re.sub(r'\*\*([^*]+?)\*\*', r'<strong>\1</strong>', text)
+        text = re.sub(r'\*([^*]+?)\*', r'<em>\1</em>', text)
         text = re.sub(r'\s+', ' ', text).strip()
         if len(text) <= max_chars:
             return text
-        cut = text[:max_chars].rstrip('，。、；：,.;: ') 
+        cut = text[:max_chars].rstrip('，。、；：,.;: ')
         return cut + '…'
 
     def _get_default_group_id(self) -> str:
